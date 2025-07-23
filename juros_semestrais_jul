@@ -1,0 +1,125 @@
+WITH
+    aberturas AS ( 
+        SELECT DISTINCT
+            email1.cpf
+            , CASE WHEN email1.cpf IS NULL THEN 0 ELSE 1 END AS email1
+            , CASE WHEN email2.cpf IS NULL THEN 0 ELSE 1 END AS email2
+            , CASE WHEN errata.cpf IS NULL THEN 0 ELSE 1 END AS errata
+        FROM juros_semestrais_jul25_abriu_email1 email1
+
+        FULL JOIN juros_semestrais_jul25_abriu_email2  email2 ON email1.cpf = email2.cpf
+
+        FULL JOIN juros_semestrais_jul25_abriu_errata  errata ON email1.cpf = errata.cpf
+
+        WHERE email1.cpf IS NOT NULL
+
+        UNION 
+
+        SELECT DISTINCT
+            email2.cpf
+            , CASE WHEN email1.cpf IS NULL THEN 0 ELSE 1 END AS email1
+            , CASE WHEN email2.cpf IS NULL THEN 0 ELSE 1 END AS email2
+            , CASE WHEN errata.cpf IS NULL THEN 0 ELSE 1 END AS errata
+        FROM juros_semestrais_jul25_abriu_email1 email1
+
+        FULL JOIN juros_semestrais_jul25_abriu_email2  email2 ON email1.cpf = email2.cpf
+
+        FULL JOIN juros_semestrais_jul25_abriu_errata  errata ON email1.cpf = errata.cpf
+
+        WHERE email2.cpf IS NOT NULL
+
+        UNION 
+
+        SELECT DISTINCT
+            errata.cpf
+            , CASE WHEN email1.cpf IS NULL THEN 0 ELSE 1 END AS email1
+            , CASE WHEN email2.cpf IS NULL THEN 0 ELSE 1 END AS email2
+            , CASE WHEN errata.cpf IS NULL THEN 0 ELSE 1 END AS errata
+        FROM juros_semestrais_jul25_abriu_email1 email1
+
+        FULL JOIN juros_semestrais_jul25_abriu_email2  email2 ON email1.cpf = email2.cpf
+
+        FULL JOIN juros_semestrais_jul25_abriu_errata  errata ON email1.cpf = errata.cpf
+
+        WHERE errata.cpf IS NOT NULL
+
+    )
+
+, juros AS (
+    SELECT 
+        LPAD (num_documento_identificacao, 11, '0') cpf 
+        , cod_agente_custodia
+        , desc_tipo_titulo_publico
+        , CAST(val_total_negociado AS DOUBLE) val_total_negociado 
+    FROM juros_semestrais_jul25_mov 
+) 
+
+, mov AS (
+   SELECT
+     LPAD (movimentacao_recente_dremio.num_documento_identificacao, 11, '0') cpf 
+   , movimentacao_recente_dremio.cod_agente_custodia
+   , SUM(movimentacao_recente_dremio.val_total_negociado) total_movimentacoes
+   FROM
+     (movimentacao_recente_dremio
+   INNER JOIN juros ON ((juros.cpf = movimentacao_recente_dremio.num_documento_identificacao)))
+   WHERE ((movimentacao_recente_dremio.data_operacao_titulo_publico >= DATE '2025-07-01') AND (movimentacao_recente_dremio.data_operacao_titulo_publico < DATE '2025-07-15'))
+   GROUP BY 1, 2
+) 
+, recorrencia_aux AS (
+   SELECT
+     num_documento_identificacao
+   , cod_agente_custodia
+   , SUM((CASE WHEN ((data_operacao_titulo_publico >= DATE '2025-04-01') AND (data_operacao_titulo_publico < DATE '2025-05-01')) THEN val_total_negociado END)) valor_total_abr
+   , SUM((CASE WHEN ((data_operacao_titulo_publico >= DATE '2025-05-01') AND (data_operacao_titulo_publico < DATE '2025-06-01')) THEN val_total_negociado END)) valor_total_mai
+   , SUM((CASE WHEN ((data_operacao_titulo_publico >= DATE '2025-06-01') AND (data_operacao_titulo_publico < DATE '2025-07-01')) THEN val_total_negociado END)) valor_total_jun
+   , (CASE WHEN (SUM((CASE WHEN ((data_operacao_titulo_publico >= DATE '2025-04-01') AND (data_operacao_titulo_publico < DATE '2025-05-01')) THEN val_total_negociado END)) > 0) THEN 1 ELSE 0 END) mes_1
+   , (CASE WHEN (SUM((CASE WHEN ((data_operacao_titulo_publico >= DATE '2025-05-01') AND (data_operacao_titulo_publico < DATE '2025-06-01')) THEN val_total_negociado END)) > 0) THEN 1 ELSE 0 END) mes_2
+   , (CASE WHEN (SUM((CASE WHEN ((data_operacao_titulo_publico >= DATE '2025-06-01') AND (data_operacao_titulo_publico < DATE '2025-07-01')) THEN val_total_negociado END)) > 0) THEN 1 ELSE 0 END) mes_3
+   FROM
+     movimentacao_recente_dremio
+   GROUP BY 1, 2
+) 
+, recorrencia_final AS (
+   SELECT
+     num_documento_identificacao cpf
+   , cod_agente_custodia
+   , (CASE WHEN (((mes_1 + mes_2) + mes_3) > 1) THEN (((valor_total_abr + valor_total_mai) + valor_total_jun) / 3) ELSE 0 END) investimento_recorrente
+   FROM
+     recorrencia_aux
+) 
+, cte1 AS (
+   SELECT DISTINCT
+     LPAD(num_documento_identificacao, 11, '0') num_documento_identificacao
+   , (CASE WHEN (SUM(CAST(val_estoque_titulo_publico_tesouro_direto AS DECIMAL)) > 250000) THEN 'Sofisticado' ELSE 'Digital' END) perfil
+   FROM
+     estoque_com_cpf_20250604
+   GROUP BY LPAD(num_documento_identificacao, 11, '0')
+) 
+
+
+SELECT DISTINCT
+  juros.cpf
+, (CASE WHEN (c.classificacao IN ('Digital', 'Sofisticado')) THEN c.classificacao ELSE cte1.perfil END) perfil
+, juros.cod_agente_custodia
+, nome_completo_razao_social
+, (CASE WHEN (nr_cnpj IS NULL) THEN U&'Não recebeu incentivo' ELSE 'Player de incentivo' END) incentivo
+, juros.desc_tipo_titulo_publico
+, aberturas.email1
+, aberturas.email2
+, aberturas.errata
+, juros.val_total_negociado juros_semestrais
+, COALESCE(mov.total_movimentacoes, 0) total_investido
+, COALESCE(LEAST(juros.val_total_negociado, mov.total_movimentacoes), 0) total_reinvestido
+, COALESCE((CASE WHEN ((mov.total_movimentacoes - juros.val_total_negociado) < 0) THEN 0 ELSE (mov.total_movimentacoes - juros.val_total_negociado) END), 0) aux_upsell
+, COALESCE(rec.investimento_recorrente, 0) investimento_recorrente
+, COALESCE((CASE WHEN (((CASE WHEN ((mov.total_movimentacoes - juros.val_total_negociado) < 0) THEN 0 ELSE (mov.total_movimentacoes - juros.val_total_negociado) END) - rec.investimento_recorrente) < 0) THEN 0 ELSE ((CASE WHEN ((mov.total_movimentacoes - juros.val_total_negociado) < 0) THEN 0 ELSE (mov.total_movimentacoes - juros.val_total_negociado) END) - rec.investimento_recorrente) END), 0) upsell
+FROM
+  juros
+LEFT JOIN mov ON ((juros.cpf = mov.cpf))
+LEFT JOIN recorrencia_final rec ON ((juros.cpf = rec.cpf))
+LEFT JOIN clusterizacao_2024_tratado c ON (juros.cpf = LPAD(c.CPF, 11, '0'))
+LEFT JOIN cte1 ON (juros.cpf = LPAD(cte1.num_documento_identificacao, 11, '0'))
+LEFT JOIN depara_corretoras ON (cod_operacional_participante = juros.cod_agente_custodia)
+LEFT JOIN corretoras_incentivo ON (juros.cod_agente_custodia = nr_cnpj)
+LEFT JOIN aberturas ON (juros.cpf = aberturas.cpf)
+ 
